@@ -179,3 +179,31 @@
 
     (update data :pages-index #(d/mapm update-page %))))
 
+
+;; Remove groups without any shape, both in pages and components
+(defmethod migrate 8
+  [data]
+  (letfn [(remove-empty-children [empty-groups _ shape]
+            (if-not (:shapes shape)
+              shape
+              (update shape :shapes 
+                      (fn [shapes]
+                        (vec (remove #(empty-groups %) shapes))))))
+
+          (clean-container [_ container]
+            (let [empty-groups (->> (filter #(and (= (:type %) :group)
+                                                  (or (empty? (:shapes %))
+                                                      (nil? (:selrect %))))
+                                            (vals (:objects container)))
+                                    (map :id)
+                                    set)]
+              (update container :objects
+                      (fn [objects]
+                        (->> objects
+                             (d/removem #(empty-groups (first %)))
+                             (d/mapm (partial remove-empty-children empty-groups)))))))]
+
+    (-> data
+      (update :pages-index #(d/mapm clean-container %))
+      (update :components #(d/mapm clean-container %)))))
+
