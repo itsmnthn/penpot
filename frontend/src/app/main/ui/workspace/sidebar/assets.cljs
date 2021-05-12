@@ -203,8 +203,9 @@
                         (filter #(contains? selected-components (:id %)))
                         (map #(dwl/rename-component
                                 (:id %)
-                                (str name " / "
-                                    (cp/merge-path-item (:path %) (:name %)))))))
+                                (-> (:path %)
+                                    (cp/merge-path-item name)
+                                    (cp/merge-path-item (:name %)))))))
             (st/emit! (dwu/commit-undo-transaction))))
 
         on-fold-group
@@ -391,8 +392,9 @@
                         (filter #(contains? selected-objects (:id %)))
                         (map #(dwl/rename-media
                                 (:id %)
-                                (str name " / "
-                                    (cp/merge-path-item (:path %) (:name %)))))))
+                                (-> (:path %)
+                                    (cp/merge-path-item name)
+                                    (cp/merge-path-item (:name %)))))))
             (st/emit! (dwu/commit-undo-transaction))))
 
         on-fold-group
@@ -607,7 +609,7 @@
          :on-blur input-blur
          :on-key-down input-key-down
          :auto-focus true
-         :default-value (:name color "")}]
+         :default-value (cp/merge-path-item (:path color) (:name color))}]
 
        [:div.name-block {:on-double-click rename-color-clicked}
         (:name color)
@@ -672,8 +674,9 @@
                         (filter #(contains? selected-colors (:id %)))
                         (map #(dwl/update-color
                                 (assoc % :name
-                                  (str name " / "
-                                       (cp/merge-path-item (:path %) (:name %))))
+                                       (-> (:path %)
+                                           (cp/merge-path-item name)
+                                           (cp/merge-path-item (:name %))))
                                 file-id))))
             (st/emit! (dwu/commit-undo-transaction))))
 
@@ -794,8 +797,9 @@
                         (filter #(contains? selected-typographies (:id %)))
                         (map #(dwl/update-typography
                                 (assoc % :name
-                                  (str name " / "
-                                       (cp/merge-path-item (:path %) (:name %))))
+                                       (-> (:path %)
+                                           (cp/merge-path-item name)
+                                           (cp/merge-path-item (:name %))))
                                 file-id))))
             (st/emit! (dwu/commit-undo-transaction))))
 
