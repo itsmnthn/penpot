@@ -200,7 +200,9 @@
             (st/emit! (dwu/start-undo-transaction))
             (apply st/emit!
                    (->> components
-                        (filter #(contains? selected-components (:id %)))
+                        (filter #(if multi-components?
+                                   (contains? selected-components (:id %))
+                                   (= (:component-id @state) (:id %))))
                         (map #(dwl/rename-component
                                 (:id %)
                                 (-> (:path %)
@@ -389,7 +391,9 @@
             (st/emit! (dwu/start-undo-transaction))
             (apply st/emit!
                    (->> objects
-                        (filter #(contains? selected-objects (:id %)))
+                        (filter #(if multi-objects?
+                                   (contains? selected-objects (:id %))
+                                   (= (:object-id @state) (:id %))))
                         (map #(dwl/rename-media
                                 (:id %)
                                 (-> (:path %)
@@ -628,7 +632,7 @@
                       [(t locale "workspace.assets.edit") edit-color-clicked])
                     [(t locale "workspace.assets.delete") delete-color]
                     (when-not multi-assets?
-                      [(tr "workspace.assets.group") on-group])]}])]))
+                      [(tr "workspace.assets.group") (on-group (:id color))])]}])]))
 
 (mf/defc colors-box
   [{:keys [file-id local? colors locale open? selected-assets
@@ -666,19 +670,22 @@
         create-group
         (mf/use-callback
           (mf/deps colors selected-colors on-clear-selection file-id)
-          (fn [name]
-            (on-clear-selection)
-            (st/emit! (dwu/start-undo-transaction))
-            (apply st/emit!
-                   (->> colors
-                        (filter #(contains? selected-colors (:id %)))
-                        (map #(dwl/update-color
-                                (assoc % :name
-                                       (-> (:path %)
-                                           (cp/merge-path-item name)
-                                           (cp/merge-path-item (:name %))))
-                                file-id))))
-            (st/emit! (dwu/commit-undo-transaction))))
+          (fn [color-id]
+            (fn [name]
+              (on-clear-selection)
+              (st/emit! (dwu/start-undo-transaction))
+              (apply st/emit!
+                     (->> colors
+                          (filter #(if multi-colors?
+                                     (contains? selected-colors (:id %))
+                                     (= color-id (:id %))))
+                          (map #(dwl/update-color
+                                  (assoc % :name
+                                         (-> (:path %)
+                                             (cp/merge-path-item name)
+                                             (cp/merge-path-item (:name %))))
+                                  file-id))))
+              (st/emit! (dwu/commit-undo-transaction)))))
 
         on-fold-group
         (mf/use-callback
@@ -692,9 +699,10 @@
         on-group
         (mf/use-callback
           (mf/deps colors selected-colors)
-          (fn [event]
-            (dom/stop-propagation event)
-            (modal/show! :create-group-dialog {:create create-group})))]
+          (fn [color-id]
+            (fn [event]
+              (dom/stop-propagation event)
+              (modal/show! :create-group-dialog {:create (create-group color-id)}))))]
 
     [:div.asset-section
      [:div.asset-title {:class (when (not open?) "closed")}
@@ -794,7 +802,9 @@
             (st/emit! (dwu/start-undo-transaction))
             (apply st/emit!
                    (->> typographies
-                        (filter #(contains? selected-typographies (:id %)))
+                        (filter #(if multi-typographies?
+                                   (contains? selected-typographies (:id %))
+                                   (= (:id @state) (:id %))))
                         (map #(dwl/update-typography
                                 (assoc % :name
                                        (-> (:path %)
