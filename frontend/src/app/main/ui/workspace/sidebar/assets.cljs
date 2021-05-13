@@ -47,11 +47,8 @@
    [okulary.core :as l]
    [rumext.alpha :as mf]))
 
-;; ---- Group assets management ----
 
-(s/def ::asset-name ::us/not-empty-string)
-(s/def ::create-group-form
-  (s/keys :req-un [::asset-name]))
+;; ---- Group assets management ----
 
 (defn group-assets
   [assets]
@@ -68,6 +65,10 @@
   (if (contains? folded-groups path)
     (disj folded-groups path)
     (conj folded-groups path)))
+
+(s/def ::asset-name ::us/not-empty-string)
+(s/def ::create-group-form
+  (s/keys :req-un [::asset-name]))
 
 (mf/defc create-group-dialog
   {::mf/register modal/components
@@ -115,6 +116,53 @@
           :value (tr "labels.create")
           :on-click on-accept}]]]]]))
 
+;; ---- Common blocks ----
+
+(mf/defc asset-section
+  [{:keys [children file-id title box assets-count open?]}]
+  (let [children (if (array? children) children [children])
+        get-role #(.. % -props -role)
+        title-buttons (filter #(= (get-role %) :title-button) children)
+        content       (filter #(= (get-role %) :content) children)]
+    [:div.asset-section
+     [:div.asset-title {:class (when (not open?) "closed")}
+      [:span {:on-click (st/emitf (dwl/set-assets-box-open file-id box (not open?)))}
+       i/arrow-slide title]
+      [:span.num-assets (str "\u00A0(") assets-count ")"] ;; Unicode 00A0 is non-breaking space
+      title-buttons]
+     (when open?
+       content)]))
+
+(mf/defc asset-section-block
+  [{:keys [children role]}]
+  [:* children])
+
+(mf/defc asset-group
+  [{:keys [children group folded-groups on-change-folded-groups]}]
+  (let [path        (first group)
+        group-open? (not (contains? folded-groups path))
+
+        on-fold-group
+        (mf/use-callback
+          (mf/deps folded-groups)
+          (fn [path]
+            (fn [event]
+              (dom/stop-propagation event)
+              (on-change-folded-groups
+                (toggle-folded-group folded-groups path)))))]
+    [:*
+     (when-not (empty? path)
+       (let [[other-path last-path truncated] (cp/compact-path path 35)]
+         [:div.group-title {:class (when-not group-open? "closed")
+                            :on-click (on-fold-group path)}
+          [:span i/arrow-slide]
+          (when-not (empty? other-path)
+            [:span.dim {:title (when truncated path)}
+             other-path "\u00A0/\u00A0"])
+          [:span {:title (when truncated path)}
+           last-path]]))
+     (when group-open?
+       children)]))
 
 ;; ---- Components box ----
 
@@ -135,7 +183,6 @@
                                 (not (empty? (:typographies selected-assets))))
 
         groups        (group-assets components)
-        folded-groups (:folded-groups @state)
 
         on-duplicate
         (mf/use-callback
@@ -210,15 +257,6 @@
                                     (cp/merge-path-item (:name %)))))))
             (st/emit! (dwu/commit-undo-transaction))))
 
-        on-fold-group
-        (mf/use-callback
-          (mf/deps groups folded-groups)
-          (fn [path]
-            (fn [event]
-              (dom/stop-propagation event)
-              (swap! state update :folded-groups
-                     toggle-folded-group path))))
-
         on-group
         (mf/use-callback
           (mf/deps components selected-components)
@@ -233,75 +271,64 @@
                                                     :component component})
            (dnd/set-allowed-effect! event "move")))]
 
-    [:div.asset-section
-     [:div.asset-title {:class (when (not open?) "closed")}
-      [:span {:on-click (st/emitf (dwl/set-assets-box-open file-id :components (not open?)))}
-       i/arrow-slide (tr "workspace.assets.components")]
-      [:span (str "\u00A0(") (count components) ")"]] ;; Unicode 00A0 is non-breaking space
-     (when open?
-       (for [group groups]
-         (let [path        (first group)
-               components  (second group)
-               group-open? (not (contains? folded-groups path))]
-           [:*
-            (when-not (empty? path)
-              (let [[other-path last-path truncated] (cp/compact-path path 35)]
-                [:div.group-title {:class (when-not group-open? "closed")
-                                   :on-click (on-fold-group path)}
-                 [:span i/arrow-slide]
-                 (when-not (empty? other-path)
-                   [:span.dim {:title (when truncated path)}
-                    other-path "\u00A0/\u00A0"])
-                 [:span {:title (when truncated path)}
-                  last-path]]))
-            (when group-open?
-              [:div {:class-name (dom/classnames
-                                   :asset-grid @listing-thumbs?
-                                   :big @listing-thumbs?
-                                   :asset-enum (not @listing-thumbs?))}
-               (for [component components]
-                 (let [renaming? (= (:renaming @state)(:id component))]
-                   [:div {:key (:id component)
-                          :class-name (dom/classnames
-                                        :selected (contains? selected-components (:id component))
-                                        :grid-cell @listing-thumbs?
-                                        :enum-item (not @listing-thumbs?))
-                          :draggable true
-                          :on-click #(on-asset-click % (:id component) groups nil)
-                          :on-context-menu (on-context-menu (:id component))
-                          :on-drag-start (partial on-drag-start component)}
-                    [:& exports/component-svg {:group (get-in component [:objects (:id component)])
-                                               :objects (:objects component)}]
-                    [:& editable-label
-                     {:class-name (dom/classnames
-                                    :cell-name @listing-thumbs?
-                                    :item-name (not @listing-thumbs?)
-                                    :editing renaming?)
-                      :value (cp/merge-path-item (:path component) (:name component))
-                      :tooltip (cp/merge-path-item (:path component) (:name component))
-                      :display-value (if @listing-thumbs?
-                                       (:name component)
-                                       (cp/compact-name (:path component)
-                                                        (:name component)))
-                      :editing? renaming?
-                      :disable-dbl-click? true
-                      :on-change do-rename
-                      :on-cancel cancel-rename}]]))])])))
+    [:& asset-section {:file-id file-id
+                       :title (tr "workspace.assets.components")
+                       :box :components
+                       :assets-count (count components)
+                       :open? open?}
+     [:& asset-section-block {:role :content}
+      (for [group groups]
+        [:& asset-group {:group group
+                         :folded-groups (:folded-groups @state)
+                         :on-change-folded-groups #(swap! state assoc :folded-groups %)}
+          (let [components (second group)]
+            [:div {:class-name (dom/classnames
+                                 :asset-grid @listing-thumbs?
+                                 :big @listing-thumbs?
+                                 :asset-enum (not @listing-thumbs?))}
+             (for [component components]
+               (let [renaming? (= (:renaming @state)(:id component))]
+                 [:div {:key (:id component)
+                        :class-name (dom/classnames
+                                      :selected (contains? selected-components (:id component))
+                                      :grid-cell @listing-thumbs?
+                                      :enum-item (not @listing-thumbs?))
+                        :draggable true
+                        :on-click #(on-asset-click % (:id component) groups nil)
+                        :on-context-menu (on-context-menu (:id component))
+                        :on-drag-start (partial on-drag-start component)}
+                  [:& exports/component-svg {:group (get-in component [:objects (:id component)])
+                                             :objects (:objects component)}]
+                  [:& editable-label
+                   {:class-name (dom/classnames
+                                  :cell-name @listing-thumbs?
+                                  :item-name (not @listing-thumbs?)
+                                  :editing renaming?)
+                    :value (cp/merge-path-item (:path component) (:name component))
+                    :tooltip (cp/merge-path-item (:path component) (:name component))
+                    :display-value (if @listing-thumbs?
+                                     (:name component)
+                                     (cp/compact-name (:path component)
+                                                      (:name component)))
+                    :editing? renaming?
+                    :disable-dbl-click? true
+                    :on-change do-rename
+                    :on-cancel cancel-rename}]]))])])
 
-     (when local?
-       [:& context-menu
-        {:selectable false
-         :show (:menu-open @state)
-         :on-close #(swap! state assoc :menu-open false)
-         :top (:top @state)
-         :left (:left @state)
-         :options [(when-not (or multi-components? multi-assets?)
-                     [(tr "workspace.assets.rename") on-rename])
-                   (when-not multi-assets?
-                     [(tr "workspace.assets.duplicate") on-duplicate])
-                   [(tr "workspace.assets.delete") on-delete]
-                   (when-not multi-assets?
-                     [(tr "workspace.assets.group") on-group])]}])]))
+      (when local?
+        [:& context-menu
+         {:selectable false
+          :show (:menu-open @state)
+          :on-close #(swap! state assoc :menu-open false)
+          :top (:top @state)
+          :left (:left @state)
+          :options [(when-not (or multi-components? multi-assets?)
+                      [(tr "workspace.assets.rename") on-rename])
+                    (when-not multi-assets?
+                      [(tr "workspace.assets.duplicate") on-duplicate])
+                    [(tr "workspace.assets.delete") on-delete]
+                    (when-not multi-assets?
+                      [(tr "workspace.assets.group") on-group])]}])]]))
 
 
 ;; ---- Graphics box ----
@@ -324,7 +351,6 @@
                                 (not (empty? (:typographies selected-assets))))
 
         groups        (group-assets objects)
-        folded-groups (:folded-groups @state)
 
         add-graphic
         (mf/use-callback
@@ -401,15 +427,6 @@
                                     (cp/merge-path-item (:name %)))))))
             (st/emit! (dwu/commit-undo-transaction))))
 
-        on-fold-group
-        (mf/use-callback
-          (mf/deps groups folded-groups)
-          (fn [path]
-            (fn [event]
-              (dom/stop-propagation event)
-              (swap! state update :folded-groups
-                     toggle-folded-group path))))
-
         on-group
         (mf/use-callback
           (mf/deps objects selected-objects)
@@ -425,80 +442,71 @@
            (dnd/set-data! event "text/asset-type" mtype)
            (dnd/set-allowed-effect! event "move")))]
 
-    [:div.asset-section
-     [:div.asset-title {:class (when (not open?) "closed")}
-      [:span {:on-click (st/emitf (dwl/set-assets-box-open file-id :graphics (not open?)))}
-       i/arrow-slide (tr "workspace.assets.graphics")]
-      [:span.num-assets (str "\u00A0(") (count objects) ")"] ;; Unicode 00A0 is non-breaking space
+    [:& asset-section {:file-id file-id
+                       :title (tr "workspace.assets.graphics")
+                       :box :graphics
+                       :assets-count (count objects)
+                       :open? open?}
       (when local?
-        [:div.assets-button {:on-click add-graphic}
-         i/plus
-         [:& file-uploader {:accept cm/str-image-types
-                            :multi true
-                            :input-ref input-ref
-                            :on-selected on-file-selected}]])]
-     (when open?
-       (for [group groups]
-         (let [path        (first group)
-               objects     (second group)
-               group-open? (not (contains? folded-groups path))]
-           [:*
-            (when-not (empty? path)
-              (let [[other-path last-path truncated] (cp/compact-path path 35)]
-                [:div.group-title {:class (when-not group-open? "closed")
-                                   :on-click (on-fold-group path)}
-                 [:span i/arrow-slide]
-                 (when-not (empty? other-path)
-                   [:span.dim {:title (when truncated path)}
-                    other-path "\u00A0/\u00A0"])
-                 [:span {:title (when truncated path)}
-                  last-path]]))
-            (when group-open?
-              [:div {:class-name (dom/classnames
-                                   :asset-grid @listing-thumbs?
-                                   :asset-enum (not @listing-thumbs?))}
-               (for [object objects]
-                 [:div {:key (:id object)
-                        :class-name (dom/classnames
-                                      :selected (contains? selected-objects (:id object))
-                                      :grid-cell @listing-thumbs?
-                                      :enum-item (not @listing-thumbs?))
-                        :draggable true
-                        :on-click #(on-asset-click % (:id object) groups nil)
-                        :on-context-menu (on-context-menu (:id object))
-                        :on-drag-start (partial on-drag-start object)}
-                  [:img {:src (cfg/resolve-file-media object true)
-                         :draggable false}] ;; Also need to add css pointer-events: none
+        [:& asset-section-block {:role :title-button}
+         [:div.assets-button {:on-click add-graphic}
+          i/plus
+          [:& file-uploader {:accept cm/str-image-types
+                             :multi true
+                             :input-ref input-ref
+                             :on-selected on-file-selected}]]])
 
-                  (let [renaming? (= (:renaming @state) (:id object))]
-                    [:& editable-label
-                     {:class-name (dom/classnames
-                                    :cell-name @listing-thumbs?
-                                    :item-name (not @listing-thumbs?)
-                                    :editing renaming?)
-                      :value (cp/merge-path-item (:path object) (:name object))
-                      :tooltip (cp/merge-path-item (:path object) (:name object))
-                      :display-value (if @listing-thumbs?
-                                       (:name object)
-                                       (cp/compact-name (:path object)
-                                                        (:name object)))
-                      :editing? renaming?
-                      :disable-dbl-click? true
-                      :on-change do-rename
-                      :on-cancel cancel-rename}])])])])))
+       [:& asset-section-block {:role :content}
+        (for [group groups]
+          [:& asset-group {:group group
+                           :folded-groups (:folded-groups @state)
+                           :on-change-folded-groups #(swap! state assoc :folded-groups %)}
+           (let [objects (second group)]
+             [:div {:class-name (dom/classnames
+                                  :asset-grid @listing-thumbs?
+                                  :asset-enum (not @listing-thumbs?))}
+              (for [object objects]
+                [:div {:key (:id object)
+                       :class-name (dom/classnames
+                                     :selected (contains? selected-objects (:id object))
+                                     :grid-cell @listing-thumbs?
+                                     :enum-item (not @listing-thumbs?))
+                       :draggable true
+                       :on-click #(on-asset-click % (:id object) groups nil)
+                       :on-context-menu (on-context-menu (:id object))
+                       :on-drag-start (partial on-drag-start object)}
+                 [:img {:src (cfg/resolve-file-media object true)
+                        :draggable false}] ;; Also need to add css pointer-events: none
 
-     (when local?
-       [:& context-menu
-        {:selectable false
-         :show (:menu-open @state)
-         :on-close #(swap! state assoc :menu-open false)
-         :top (:top @state)
-         :left (:left @state)
-         :options [(when-not (or multi-objects? multi-assets?)
-                     [(tr "workspace.assets.rename") on-rename])
-                   [(tr "workspace.assets.delete") on-delete]
-                   (when-not multi-assets?
-                     [(tr "workspace.assets.group") on-group])]}])]))
+                 (let [renaming? (= (:renaming @state) (:id object))]
+                   [:& editable-label
+                    {:class-name (dom/classnames
+                                   :cell-name @listing-thumbs?
+                                   :item-name (not @listing-thumbs?)
+                                   :editing renaming?)
+                     :value (cp/merge-path-item (:path object) (:name object))
+                     :tooltip (cp/merge-path-item (:path object) (:name object))
+                     :display-value (if @listing-thumbs?
+                                      (:name object)
+                                      (cp/compact-name (:path object)
+                                                       (:name object)))
+                     :editing? renaming?
+                     :disable-dbl-click? true
+                     :on-change do-rename
+                     :on-cancel cancel-rename}])])])])
+
+        (when local?
+          [:& context-menu
+           {:selectable false
+            :show (:menu-open @state)
+            :on-close #(swap! state assoc :menu-open false)
+            :top (:top @state)
+            :left (:left @state)
+            :options [(when-not (or multi-objects? multi-assets?)
+                        [(tr "workspace.assets.rename") on-rename])
+                      [(tr "workspace.assets.delete") on-delete]
+                      (when-not multi-assets?
+                        [(tr "workspace.assets.group") on-group])]}])]]))
 
 
 ;; ---- Colors box ----
@@ -646,7 +654,6 @@
                                 (not (empty? (:typographies selected-assets))))
 
         groups        (group-assets colors)
-        folded-groups (:folded-groups @state)
 
         add-color
         (mf/use-callback
@@ -687,15 +694,6 @@
                                   file-id))))
               (st/emit! (dwu/commit-undo-transaction)))))
 
-        on-fold-group
-        (mf/use-callback
-          (mf/deps groups folded-groups)
-          (fn [path]
-            (fn [event]
-              (dom/stop-propagation event)
-              (swap! state update :folded-groups
-                     toggle-folded-group path))))
-
         on-group
         (mf/use-callback
           (mf/deps colors selected-colors)
@@ -704,50 +702,41 @@
               (dom/stop-propagation event)
               (modal/show! :create-group-dialog {:create (create-group color-id)}))))]
 
-    [:div.asset-section
-     [:div.asset-title {:class (when (not open?) "closed")}
-      [:span {:on-click (st/emitf (dwl/set-assets-box-open file-id :colors (not open?)))}
-       i/arrow-slide (t locale "workspace.assets.colors")]
-      [:span.num-assets (str "\u00A0(") (count colors) ")"] ;; Unicode 00A0 is non-breaking space
+    [:& asset-section {:file-id file-id
+                       :title (tr "workspace.assets.colors")
+                       :box :colors
+                       :assets-count (count colors)
+                       :open? open?}
       (when local?
-        [:div.assets-button {:on-click add-color-clicked} i/plus])]
-     (when open?
-       (for [group groups]
-         (let [path        (first group)
-               colors      (second group)
-               group-open? (not (contains? folded-groups path))]
-           [:*
-            (when-not (empty? path)
-              (let [[other-path last-path truncated] (cp/compact-path path 35)]
-                [:div.group-title {:class (when-not group-open? "closed")
-                                   :on-click (on-fold-group path)}
-                 [:span i/arrow-slide]
-                 (when-not (empty? other-path)
-                   [:span.dim {:title (when truncated path)}
-                    other-path "\u00A0/\u00A0"])
-                 [:span {:title (when truncated path)}
-                  last-path]]))
-            (when group-open?
-              [:div.asset-list
-               (for [color colors]
-                 (let [color (cond-> color
-                               (:value color) (assoc :color (:value color) :opacity 1)
-                               (:value color) (dissoc :value)
-                               true (assoc :file-id file-id))]
-                   [:& color-item {:key (:id color)
-                                   :color color
-                                   :file-id file-id
-                                   :local? local?
-                                   :selected-colors selected-colors
-                                   :multi-colors? multi-colors?
-                                   :multi-assets? multi-assets?
-                                   :on-asset-click on-asset-click
-                                   :on-assets-delete on-assets-delete
-                                   :on-clear-selection on-clear-selection
-                                   :on-group on-group
-                                   :colors colors
-                                   :locale locale}]))])])))]))
+        [:& asset-section-block {:role :title-button}
+         [:div.assets-button {:on-click add-color-clicked}
+          i/plus]])
 
+       [:& asset-section-block {:role :content}
+        (for [group groups]
+          [:& asset-group {:group group
+                           :folded-groups (:folded-groups @state)
+                           :on-change-folded-groups #(swap! state assoc :folded-groups %)}
+           (let [colors (second group)]
+             [:div.asset-list
+              (for [color colors]
+                (let [color (cond-> color
+                              (:value color) (assoc :color (:value color) :opacity 1)
+                              (:value color) (dissoc :value)
+                              true (assoc :file-id file-id))]
+                  [:& color-item {:key (:id color)
+                                  :color color
+                                  :file-id file-id
+                                  :local? local?
+                                  :selected-colors selected-colors
+                                  :multi-colors? multi-colors?
+                                  :multi-assets? multi-assets?
+                                  :on-asset-click on-asset-click
+                                  :on-assets-delete on-assets-delete
+                                  :on-clear-selection on-clear-selection
+                                  :on-group on-group
+                                  :colors colors
+                                  :locale locale}]))])])]]))
 
 ;; ---- Typography box ----
 
@@ -764,7 +753,6 @@
         local    (deref refs/workspace-local)
 
         groups        (group-assets typographies)
-        folded-groups (:folded-groups @state)
 
         selected-typographies (:typographies selected-assets)
         multi-typographies?   (> (count selected-typographies) 1)
@@ -812,15 +800,6 @@
                                            (cp/merge-path-item (:name %))))
                                 file-id))))
             (st/emit! (dwu/commit-undo-transaction))))
-
-        on-fold-group
-        (mf/use-callback
-          (mf/deps groups folded-groups)
-          (fn [path]
-            (fn [event]
-              (dom/stop-propagation event)
-              (swap! state update :folded-groups
-                     toggle-folded-group path))))
 
         on-group
         (mf/use-callback
@@ -877,58 +856,50 @@
        (when (:edit-typography local)
          (st/emit! #(update % :workspace-local dissoc :edit-typography)))))
 
-    [:div.asset-section
-     [:div.asset-title {:class (when (not open?) "closed")}
-      [:span {:on-click (st/emitf (dwl/set-assets-box-open file-id :typographies (not open?)))}
-       i/arrow-slide (t locale "workspace.assets.typography")]
-      [:span.num-assets (str "\u00A0(") (count typographies) ")"] ;; Unicode 00A0 is non-breaking space
+    [:& asset-section {:file-id file-id
+                       :title (tr "workspace.assets.typography")
+                       :box :typographies
+                       :assets-count (count typographies)
+                       :open? open?}
       (when local?
-        [:div.assets-button {:on-click add-typography} i/plus])]
+        [:& asset-section-block {:role :title-button}
+         [:div.assets-button {:on-click add-typography}
+          i/plus]])
 
-     [:& context-menu
-      {:selectable false
-       :show (:menu-open? @state)
-       :on-close #(swap! state assoc :menu-open? false)
-       :top (:top @state)
-       :left (:left @state)
-       :options [(when-not (or multi-typographies? multi-assets?)
-                   [(t locale "workspace.assets.rename") handle-rename-typography-clicked])
-                 (when-not (or multi-typographies? multi-assets?)
-                   [(t locale "workspace.assets.edit") handle-edit-typography-clicked])
-                 [(t locale "workspace.assets.delete") handle-delete-typography]
-                 (when-not multi-assets?
-                   [(tr "workspace.assets.group") on-group])]}]
-     (when open?
-       (for [group groups]
-         (let [path         (first group)
-               typographies (second group)
-               group-open?  (not (contains? folded-groups path))]
-           [:*
-            (when-not (empty? path)
-              (let [[other-path last-path truncated] (cp/compact-path path 35)]
-                [:div.group-title {:class (when-not group-open? "closed")
-                                   :on-click (on-fold-group path)}
-                 [:span i/arrow-slide]
-                 (when-not (empty? other-path)
-                   [:span.dim {:title (when truncated path)}
-                    other-path "\u00A0/\u00A0"])
-                 [:span {:title (when truncated path)}
-                  last-path]]))
-            (when group-open?
-              [:div.asset-list
-               (for [typography typographies]
-                 [:& typography-entry
-                  {:key (:id typography)
-                   :typography typography
-                   :file file
-                   :read-only? (not local?)
-                   :on-context-menu #(on-context-menu (:id typography) %)
-                   :on-change #(handle-change typography %)
-                   :selected? (contains? selected-typographies (:id typography))
-                   :on-click  #(on-asset-click % (:id typography) {"" typographies}
-                                               (partial apply-typography typography))
-                   :editting? (= editting-id (:id typography))
-                   :focus-name? (= (:rename-typography local) (:id typography))}])])])))]))
+       [:& asset-section-block {:role :content}
+        [:& context-menu
+         {:selectable false
+          :show (:menu-open? @state)
+          :on-close #(swap! state assoc :menu-open? false)
+          :top (:top @state)
+          :left (:left @state)
+          :options [(when-not (or multi-typographies? multi-assets?)
+                      [(t locale "workspace.assets.rename") handle-rename-typography-clicked])
+                    (when-not (or multi-typographies? multi-assets?)
+                      [(t locale "workspace.assets.edit") handle-edit-typography-clicked])
+                    [(t locale "workspace.assets.delete") handle-delete-typography]
+                    (when-not multi-assets?
+                      [(tr "workspace.assets.group") on-group])]}]
+        (when open?
+          (for [group groups]
+            [:& asset-group {:group group
+                             :folded-groups (:folded-groups @state)
+                             :on-change-folded-groups #(swap! state assoc :folded-groups %)}
+             (let [typographies (second group)]
+               [:div.asset-list
+                (for [typography typographies]
+                  [:& typography-entry
+                   {:key (:id typography)
+                    :typography typography
+                    :file file
+                    :read-only? (not local?)
+                    :on-context-menu #(on-context-menu (:id typography) %)
+                    :on-change #(handle-change typography %)
+                    :selected? (contains? selected-typographies (:id typography))
+                    :on-click  #(on-asset-click % (:id typography) {"" typographies}
+                                                (partial apply-typography typography))
+                    :editting? (= editting-id (:id typography))
+                    :focus-name? (= (:rename-typography local) (:id typography))}])])]))]]))
 
 
 ;; --- Assets toolbox ----
