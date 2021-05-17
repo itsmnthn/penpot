@@ -51,12 +51,25 @@
 ;; ---- Group assets management ----
 
 (defn group-assets
+  "Convert a list of assets in a nested structure like this:
+
+    {'': [{assetA} {assetB}]
+     'group1': {'': [{asset1A} {asset1B}]
+                'subgroup11': {'': [{asset11A} {asset11B} {asset11C}]}
+                'subgroup12': {'': [{asset12A}]}}
+     'group2': {'subgroup21': {'': [{asset21A}}}}
+  "
   [assets]
+  (when-not (empty? assets)
   (reduce (fn [groups asset]
-              (update groups (or (:path asset) "")
-                      #(conj (or % []) asset)))
-          (sorted-map)
-          assets))
+            (let [path-vector (cp/split-path (or (:path asset) ""))]
+              (update-in groups (conj path-vector "")
+                         (fn [group]
+                           (if-not group
+                             [asset]
+                             (conj group asset))))))
+          {}
+          assets)))
 
 (def empty-folded-groups #{})
 
@@ -137,34 +150,98 @@
   [{:keys [children role]}]
   [:* children])
 
-(mf/defc asset-group
-  [{:keys [children group folded-groups on-change-folded-groups]}]
-  (let [path        (first group)
-        group-open? (not (contains? folded-groups path))
+(mf/defc asset-group-title
+  [{:keys [path group-open? on-fold-group]}]
+  (when-not (empty? path)
+    (let [[other-path last-path truncated] (cp/compact-path path 35)]
+      [:div.group-title {:class (when-not group-open? "closed")
+                         :on-click on-fold-group}
+       [:span i/arrow-slide]
+       (when-not (empty? other-path)
+         [:span.dim {:title (when truncated path)}
+          other-path "\u00A0/\u00A0"])
+       [:span {:title (when truncated path)}
+        last-path]])))
+
+
+;; ---- Components box ----
+
+(mf/defc components-item
+  [{:keys [component groups state listing-thumbs? selected-components
+           on-asset-click on-context-menu on-drag-start do-rename cancel-rename]}]
+     [:div {:key (:id component)
+            :class-name (dom/classnames
+                          :selected (contains? selected-components (:id component))
+                          :grid-cell @listing-thumbs?
+                          :enum-item (not @listing-thumbs?))
+            :draggable true
+            :on-click #(on-asset-click % (:id component) groups nil)
+            :on-context-menu (on-context-menu (:id component))
+            :on-drag-start (partial on-drag-start component)}
+      [:& exports/component-svg {:group (get-in component [:objects (:id component)])
+                                 :objects (:objects component)}]
+      (let [renaming? (= (:renaming @state)(:id component))]
+        [:& editable-label
+         {:class-name (dom/classnames
+                        :cell-name @listing-thumbs?
+                        :item-name (not @listing-thumbs?)
+                        :editing renaming?)
+          :value (cp/merge-path-item (:path component) (:name component))
+          :tooltip (cp/merge-path-item (:path component) (:name component))
+          :display-value (if @listing-thumbs?
+                           (:name component)
+                           (cp/compact-name (:path component)
+                                            (:name component)))
+          :editing? renaming?
+          :disable-dbl-click? true
+          :on-change do-rename
+          :on-cancel cancel-rename}])])
+
+(mf/defc components-group
+  [{:keys [prefix groups state listing-thumbs? selected-components on-asset-click
+    on-drag-start do-rename cancel-rename on-context-menu]}]
+  (let [group-open? (mf/use-state true)
 
         on-fold-group
         (mf/use-callback
-          (mf/deps folded-groups)
-          (fn [path]
-            (fn [event]
-              (dom/stop-propagation event)
-              (on-change-folded-groups
-                (toggle-folded-group folded-groups path)))))]
-    [:*
-     (when-not (empty? path)
-       (let [[other-path last-path truncated] (cp/compact-path path 35)]
-         [:div.group-title {:class (when-not group-open? "closed")
-                            :on-click (on-fold-group path)}
-          [:span i/arrow-slide]
-          (when-not (empty? other-path)
-            [:span.dim {:title (when truncated path)}
-             other-path "\u00A0/\u00A0"])
-          [:span {:title (when truncated path)}
-           last-path]]))
-     (when group-open?
-       children)]))
+          (fn [event]
+            (dom/stop-propagation event)
+            (swap! group-open? not)))]
 
-;; ---- Components box ----
+    [:*
+     [:& asset-group-title {:path prefix
+                            :group-open? @group-open?
+                            :on-fold-group on-fold-group}]
+     (when @group-open?
+       [:*
+        (let [components (get groups "" [])]
+          [:div {:class-name (dom/classnames
+                               :asset-grid @listing-thumbs?
+                               :big @listing-thumbs?
+                               :asset-enum (not @listing-thumbs?))}
+           (for [component components]
+             [:& components-item {:component component
+                                  :groups groups
+                                  :state state
+                                  :listing-thumbs? listing-thumbs?
+                                  :selected-components selected-components
+                                  :on-asset-click on-asset-click
+                                  :on-context-menu on-context-menu
+                                  :on-drag-start on-drag-start
+                                  :do-rename do-rename
+                                  :cancel-rename cancel-rename}])])
+        (for [[path-item content] groups]
+          (when-not (empty? path-item)
+            [:& components-group {:prefix (cp/merge-path-item prefix path-item)
+                                  :groups content
+                                  :state state
+                                  :listing-thumbs? listing-thumbs?
+                                  :selected-components selected-components
+                                  :on-asset-click on-asset-click
+                                  :on-drag-start on-drag-start
+                                  :do-rename do-rename
+                                  :cancel-rename cancel-rename
+                                  :on-context-menu on-context-menu}]))])]))
 
 (mf/defc components-box
   [{:keys [file-id local? components listing-thumbs? open? selected-assets
@@ -182,27 +259,27 @@
                                 (not (empty? (:colors selected-assets)))
                                 (not (empty? (:typographies selected-assets))))
 
-        groups        (group-assets components)
+        groups (group-assets components)
 
         on-duplicate
         (mf/use-callback
-         (mf/deps @state)
-         (fn []
-           (if (empty? selected-components)
-             (st/emit! (dwl/duplicate-component {:id (:component-id @state)}))
-             (do
-               (st/emit! (dwu/start-undo-transaction))
-               (apply st/emit! (map #(dwl/duplicate-component {:id %}) selected-components))
-               (st/emit! (dwu/commit-undo-transaction))))))
+          (mf/deps @state)
+          (fn []
+            (if (empty? selected-components)
+              (st/emit! (dwl/duplicate-component {:id (:component-id @state)}))
+              (do
+                (st/emit! (dwu/start-undo-transaction))
+                (apply st/emit! (map #(dwl/duplicate-component {:id %}) selected-components))
+                (st/emit! (dwu/commit-undo-transaction))))))
 
         on-delete
         (mf/use-callback
-         (mf/deps @state file-id multi-components? multi-assets?)
-         (fn []
-           (if (or multi-components? multi-assets?)
-             (on-assets-delete)
-             (st/emit! (dwl/delete-component {:id (:component-id @state)})))
-           (st/emit! (dwl/sync-file file-id file-id))))
+          (mf/deps @state file-id multi-components? multi-assets?)
+          (fn []
+            (if (or multi-components? multi-assets?)
+              (on-assets-delete)
+              (st/emit! (dwl/delete-component {:id (:component-id @state)})))
+            (st/emit! (dwl/sync-file file-id file-id))))
 
         on-rename
         (mf/use-callback
@@ -277,44 +354,16 @@
                        :assets-count (count components)
                        :open? open?}
      [:& asset-section-block {:role :content}
-      (for [group groups]
-        [:& asset-group {:group group
-                         :folded-groups (:folded-groups @state)
-                         :on-change-folded-groups #(swap! state assoc :folded-groups %)}
-          (let [components (second group)]
-            [:div {:class-name (dom/classnames
-                                 :asset-grid @listing-thumbs?
-                                 :big @listing-thumbs?
-                                 :asset-enum (not @listing-thumbs?))}
-             (for [component components]
-               (let [renaming? (= (:renaming @state)(:id component))]
-                 [:div {:key (:id component)
-                        :class-name (dom/classnames
-                                      :selected (contains? selected-components (:id component))
-                                      :grid-cell @listing-thumbs?
-                                      :enum-item (not @listing-thumbs?))
-                        :draggable true
-                        :on-click #(on-asset-click % (:id component) groups nil)
-                        :on-context-menu (on-context-menu (:id component))
-                        :on-drag-start (partial on-drag-start component)}
-                  [:& exports/component-svg {:group (get-in component [:objects (:id component)])
-                                             :objects (:objects component)}]
-                  [:& editable-label
-                   {:class-name (dom/classnames
-                                  :cell-name @listing-thumbs?
-                                  :item-name (not @listing-thumbs?)
-                                  :editing renaming?)
-                    :value (cp/merge-path-item (:path component) (:name component))
-                    :tooltip (cp/merge-path-item (:path component) (:name component))
-                    :display-value (if @listing-thumbs?
-                                     (:name component)
-                                     (cp/compact-name (:path component)
-                                                      (:name component)))
-                    :editing? renaming?
-                    :disable-dbl-click? true
-                    :on-change do-rename
-                    :on-cancel cancel-rename}]]))])])
-
+      [:& components-group {:prefix ""
+                            :groups groups
+                            :state state
+                            :listing-thumbs? listing-thumbs?
+                            :selected-components selected-components
+                            :on-asset-click on-asset-click
+                            :on-drag-start on-drag-start
+                            :do-rename do-rename
+                            :cancel-rename cancel-rename
+                            :on-context-menu on-context-menu}]
       (when local?
         [:& context-menu
          {:selectable false
@@ -333,6 +382,84 @@
 
 ;; ---- Graphics box ----
 
+(mf/defc graphics-item
+  [{:keys [object groups state listing-thumbs? selected-objects
+           on-asset-click on-context-menu on-drag-start do-rename cancel-rename]}]
+  [:div {:key (:id object)
+         :class-name (dom/classnames
+                       :selected (contains? selected-objects (:id object))
+                       :grid-cell @listing-thumbs?
+                       :enum-item (not @listing-thumbs?))
+         :draggable true
+         :on-click #(on-asset-click % (:id object) groups nil)
+         :on-context-menu (on-context-menu (:id object))
+         :on-drag-start (partial on-drag-start object)}
+   [:img {:src (cfg/resolve-file-media object true)
+          :draggable false}] ;; Also need to add css pointer-events: none
+
+   (let [renaming? (= (:renaming @state)(:id object))]
+     [:& editable-label
+      {:class-name (dom/classnames
+                     :cell-name @listing-thumbs?
+                     :item-name (not @listing-thumbs?)
+                     :editing renaming?)
+       :value (cp/merge-path-item (:path object) (:name object))
+       :tooltip (cp/merge-path-item (:path object) (:name object))
+       :display-value (if @listing-thumbs?
+                        (:name object)
+                        (cp/compact-name (:path object)
+                                         (:name object)))
+       :editing? renaming?
+       :disable-dbl-click? true
+       :on-change do-rename
+       :on-cancel cancel-rename}])])
+
+(mf/defc graphics-group
+  [{:keys [prefix groups state listing-thumbs? selected-objects on-asset-click
+           on-drag-start do-rename cancel-rename on-context-menu]}]
+  (let [objects  (get groups "" [])
+        group-open? (mf/use-state true)
+
+        on-fold-group
+        (mf/use-callback
+          (fn [event]
+            (dom/stop-propagation event)
+            (swap! group-open? not)))]
+
+    [:*
+     [:& asset-group-title {:path prefix
+                            :group-open? @group-open?
+                            :on-fold-group on-fold-group}]
+     (when @group-open?
+       [:*
+        (let [objects (get groups "" [])]
+          [:div {:class-name (dom/classnames
+                               :asset-grid @listing-thumbs?
+                               :asset-enum (not @listing-thumbs?))}
+           (for [object objects]
+             [:& graphics-item {:object object
+                                :groups groups
+                                :state state
+                                :listing-thumbs? listing-thumbs?
+                                :selected-objects selected-objects
+                                :on-asset-click on-asset-click
+                                :on-context-menu on-context-menu
+                                :on-drag-start on-drag-start
+                                :do-rename do-rename
+                                :cancel-rename cancel-rename}])])
+        (for [[path-item content] groups]
+          (when-not (empty? path-item)
+            [:& graphics-group {:prefix (cp/merge-path-item prefix path-item)
+                                :groups content
+                                :state state
+                                :listing-thumbs? listing-thumbs?
+                                :selected-objects selected-objects
+                                :on-asset-click on-asset-click
+                                :on-drag-start on-drag-start
+                                :do-rename do-rename
+                                :cancel-rename cancel-rename
+                                :on-context-menu on-context-menu}]))])]))
+
 (mf/defc graphics-box
   [{:keys [file-id local? objects listing-thumbs? open? selected-assets
            on-asset-click on-assets-delete on-clear-selection] :as props}]
@@ -350,7 +477,7 @@
                                 (not (empty? (:colors selected-assets)))
                                 (not (empty? (:typographies selected-assets))))
 
-        groups        (group-assets objects)
+        groups (group-assets objects)
 
         add-graphic
         (mf/use-callback
@@ -457,56 +584,28 @@
                              :on-selected on-file-selected}]]])
 
        [:& asset-section-block {:role :content}
-        (for [group groups]
-          [:& asset-group {:group group
-                           :folded-groups (:folded-groups @state)
-                           :on-change-folded-groups #(swap! state assoc :folded-groups %)}
-           (let [objects (second group)]
-             [:div {:class-name (dom/classnames
-                                  :asset-grid @listing-thumbs?
-                                  :asset-enum (not @listing-thumbs?))}
-              (for [object objects]
-                [:div {:key (:id object)
-                       :class-name (dom/classnames
-                                     :selected (contains? selected-objects (:id object))
-                                     :grid-cell @listing-thumbs?
-                                     :enum-item (not @listing-thumbs?))
-                       :draggable true
-                       :on-click #(on-asset-click % (:id object) groups nil)
-                       :on-context-menu (on-context-menu (:id object))
-                       :on-drag-start (partial on-drag-start object)}
-                 [:img {:src (cfg/resolve-file-media object true)
-                        :draggable false}] ;; Also need to add css pointer-events: none
-
-                 (let [renaming? (= (:renaming @state) (:id object))]
-                   [:& editable-label
-                    {:class-name (dom/classnames
-                                   :cell-name @listing-thumbs?
-                                   :item-name (not @listing-thumbs?)
-                                   :editing renaming?)
-                     :value (cp/merge-path-item (:path object) (:name object))
-                     :tooltip (cp/merge-path-item (:path object) (:name object))
-                     :display-value (if @listing-thumbs?
-                                      (:name object)
-                                      (cp/compact-name (:path object)
-                                                       (:name object)))
-                     :editing? renaming?
-                     :disable-dbl-click? true
-                     :on-change do-rename
-                     :on-cancel cancel-rename}])])])])
-
-        (when local?
-          [:& context-menu
-           {:selectable false
-            :show (:menu-open @state)
-            :on-close #(swap! state assoc :menu-open false)
-            :top (:top @state)
-            :left (:left @state)
-            :options [(when-not (or multi-objects? multi-assets?)
-                        [(tr "workspace.assets.rename") on-rename])
-                      [(tr "workspace.assets.delete") on-delete]
-                      (when-not multi-assets?
-                        [(tr "workspace.assets.group") on-group])]}])]]))
+        [:& graphics-group {:prefix ""
+                            :groups groups
+                            :state state
+                            :listing-thumbs? listing-thumbs?
+                            :selected-objects selected-objects
+                            :on-asset-click on-asset-click
+                            :on-drag-start on-drag-start
+                            :do-rename do-rename
+                            :cancel-rename cancel-rename
+                            :on-context-menu on-context-menu}]
+          (when local?
+            [:& context-menu
+             {:selectable false
+              :show (:menu-open @state)
+              :on-close #(swap! state assoc :menu-open false)
+              :top (:top @state)
+              :left (:left @state)
+              :options [(when-not (or multi-objects? multi-assets?)
+                          [(tr "workspace.assets.rename") on-rename])
+                        [(tr "workspace.assets.delete") on-delete]
+                        (when-not multi-assets?
+                          [(tr "workspace.assets.group") on-group])]}])]]))
 
 
 ;; ---- Colors box ----
@@ -642,6 +741,61 @@
                     (when-not multi-assets?
                       [(tr "workspace.assets.group") (on-group (:id color))])]}])]))
 
+(mf/defc colors-group
+  [{:keys [prefix groups state file-id local? selected-colors
+           multi-colors? multi-assets? on-asset-click on-assets-delete
+           on-clear-selection on-group colors locale]}]
+  (let [group-open? (mf/use-state true)
+
+        on-fold-group
+        (mf/use-callback
+          (fn [event]
+            (dom/stop-propagation event)
+            (swap! group-open? not)))]
+
+    [:*
+     [:& asset-group-title {:path prefix
+                            :group-open? @group-open?
+                            :on-fold-group on-fold-group}]
+     (when @group-open?
+       [:*
+        (let [colors (get groups "" [])]
+          [:div.asset-list
+           (for [color colors]
+             (let [color (cond-> color
+                           (:value color) (assoc :color (:value color) :opacity 1)
+                           (:value color) (dissoc :value)
+                           true (assoc :file-id file-id))]
+               [:& color-item {:key (:id color)
+                               :color color
+                               :file-id file-id
+                               :local? local?
+                               :selected-colors selected-colors
+                               :multi-colors? multi-colors?
+                               :multi-assets? multi-assets?
+                               :on-asset-click on-asset-click
+                               :on-assets-delete on-assets-delete
+                               :on-clear-selection on-clear-selection
+                               :on-group on-group
+                               :colors colors
+                               :locale locale}]))])
+        (for [[path-item content] groups]
+          (when-not (empty? path-item)
+            [:& colors-group {:prefix (cp/merge-path-item prefix path-item)
+                              :groups content
+                              :state state
+                              :file-id file-id
+                              :local? local?
+                              :selected-colors selected-colors
+                              :multi-colors? multi-colors?
+                              :multi-assets? multi-assets?
+                              :on-asset-click on-asset-click
+                              :on-assets-delete on-assets-delete
+                              :on-clear-selection on-clear-selection
+                              :on-group on-group
+                              :colors colors
+                              :locale locale}]))])]))
+
 (mf/defc colors-box
   [{:keys [file-id local? colors locale open? selected-assets
            on-asset-click on-assets-delete on-clear-selection] :as props}]
@@ -713,34 +867,73 @@
           i/plus]])
 
        [:& asset-section-block {:role :content}
-        (for [group groups]
-          [:& asset-group {:group group
-                           :folded-groups (:folded-groups @state)
-                           :on-change-folded-groups #(swap! state assoc :folded-groups %)}
-           (let [colors (second group)]
-             [:div.asset-list
-              (for [color colors]
-                (let [color (cond-> color
-                              (:value color) (assoc :color (:value color) :opacity 1)
-                              (:value color) (dissoc :value)
-                              true (assoc :file-id file-id))]
-                  [:& color-item {:key (:id color)
-                                  :color color
-                                  :file-id file-id
-                                  :local? local?
-                                  :selected-colors selected-colors
-                                  :multi-colors? multi-colors?
-                                  :multi-assets? multi-assets?
-                                  :on-asset-click on-asset-click
-                                  :on-assets-delete on-assets-delete
-                                  :on-clear-selection on-clear-selection
-                                  :on-group on-group
-                                  :colors colors
-                                  :locale locale}]))])])]]))
+        [:& colors-group {:prefix ""
+                          :groups groups
+                          :state state
+                          :file-id file-id
+                          :local? local?
+                          :selected-colors selected-colors
+                          :multi-colors? multi-colors?
+                          :multi-assets? multi-assets?
+                          :on-asset-click on-asset-click
+                          :on-assets-delete on-assets-delete
+                          :on-clear-selection on-clear-selection
+                          :on-group on-group
+                          :colors colors
+                          :locale locale}]]]))
 
 ;; ---- Typography box ----
 
-(mf/defc typography-box
+(mf/defc typographies-group
+  [{:keys [prefix groups state file local? selected-typographies local
+           editting-id on-asset-click handle-change apply-typography
+           on-context-menu]}]
+  (let [group-open? (mf/use-state true)
+
+        on-fold-group
+        (mf/use-callback
+          (fn [event]
+            (dom/stop-propagation event)
+            (swap! group-open? not)))]
+
+    [:*
+     [:& asset-group-title {:path prefix
+                            :group-open? @group-open?
+                            :on-fold-group on-fold-group}]
+     (when @group-open?
+       [:*
+        (let [typographies (get groups "" [])]
+          [:div.asset-list
+           (for [typography typographies]
+             [:& typography-entry
+              {:key (:id typography)
+               :typography typography
+               :file file
+               :read-only? (not local?)
+               :on-context-menu #(on-context-menu (:id typography) %)
+               :on-change #(handle-change typography %)
+               :selected? (contains? selected-typographies (:id typography))
+               :on-click  #(on-asset-click % (:id typography) {"" typographies}
+                                           (partial apply-typography typography))
+               :editting? (= editting-id (:id typography))
+               :focus-name? (= (:rename-typography local) (:id typography))}])])
+
+        (for [[path-item content] groups]
+          (when-not (empty? path-item)
+            [:& typographies-group {:prefix (cp/merge-path-item prefix path-item)
+                                    :groups content
+                                    :state state
+                                    :file file
+                                    :local? local?
+                                    :selected-typographies selected-typographies
+                                    :editting-id editting-id
+                                    :local local
+                                    :on-asset-click on-asset-click
+                                    :handle-change handle-change
+                                    :apply-typography apply-typography
+                                    :on-context-menu on-context-menu}]))])]))
+
+(mf/defc typographies-box
   [{:keys [file file-id local? typographies locale open? selected-assets
            on-asset-click on-assets-delete on-clear-selection] :as props}]
   (let [state (mf/use-state {:detail-open? false
@@ -867,39 +1060,33 @@
           i/plus]])
 
        [:& asset-section-block {:role :content}
-        [:& context-menu
-         {:selectable false
-          :show (:menu-open? @state)
-          :on-close #(swap! state assoc :menu-open? false)
-          :top (:top @state)
-          :left (:left @state)
-          :options [(when-not (or multi-typographies? multi-assets?)
-                      [(t locale "workspace.assets.rename") handle-rename-typography-clicked])
-                    (when-not (or multi-typographies? multi-assets?)
-                      [(t locale "workspace.assets.edit") handle-edit-typography-clicked])
-                    [(t locale "workspace.assets.delete") handle-delete-typography]
-                    (when-not multi-assets?
-                      [(tr "workspace.assets.group") on-group])]}]
-        (when open?
-          (for [group groups]
-            [:& asset-group {:group group
-                             :folded-groups (:folded-groups @state)
-                             :on-change-folded-groups #(swap! state assoc :folded-groups %)}
-             (let [typographies (second group)]
-               [:div.asset-list
-                (for [typography typographies]
-                  [:& typography-entry
-                   {:key (:id typography)
-                    :typography typography
-                    :file file
-                    :read-only? (not local?)
-                    :on-context-menu #(on-context-menu (:id typography) %)
-                    :on-change #(handle-change typography %)
-                    :selected? (contains? selected-typographies (:id typography))
-                    :on-click  #(on-asset-click % (:id typography) {"" typographies}
-                                                (partial apply-typography typography))
-                    :editting? (= editting-id (:id typography))
-                    :focus-name? (= (:rename-typography local) (:id typography))}])])]))]]))
+        [:& typographies-group {:prefix ""
+                                :groups groups
+                                :state state
+                                :file file
+                                :local? local?
+                                :selected-typographies selected-typographies
+                                :editting-id editting-id
+                                :local local
+                                :on-asset-click on-asset-click
+                                :handle-change handle-change
+                                :apply-typography apply-typography
+                                :on-context-menu on-context-menu}]
+
+        (when local?
+          [:& context-menu
+           {:selectable false
+            :show (:menu-open? @state)
+            :on-close #(swap! state assoc :menu-open? false)
+            :top (:top @state)
+            :left (:left @state)
+            :options [(when-not (or multi-typographies? multi-assets?)
+                        [(t locale "workspace.assets.rename") handle-rename-typography-clicked])
+                      (when-not (or multi-typographies? multi-assets?)
+                        [(t locale "workspace.assets.edit") handle-edit-typography-clicked])
+                      [(t locale "workspace.assets.delete") handle-delete-typography]
+                      (when-not multi-assets?
+                        [(tr "workspace.assets.group") on-group])]}])]]))
 
 
 ;; --- Assets toolbox ----
@@ -1168,16 +1355,16 @@
                             :on-clear-selection unselect-all}])
 
           (when show-typography?
-            [:& typography-box {:file file
-                                :file-id (:id file)
-                                :local? local?
-                                :locale locale
-                                :typographies typographies
-                                :open? (open-box? :typographies)
-                                :selected-assets @selected-assets
-                                :on-asset-click (partial on-asset-click :typographies)
-                                :on-assets-delete on-assets-delete
-                                :on-clear-selection unselect-all}])
+            [:& typographies-box {:file file
+                                  :file-id (:id file)
+                                  :local? local?
+                                  :locale locale
+                                  :typographies typographies
+                                  :open? (open-box? :typographies)
+                                  :selected-assets @selected-assets
+                                  :on-asset-click (partial on-asset-click :typographies)
+                                  :on-assets-delete on-assets-delete
+                                  :on-clear-selection unselect-all}])
 
           (when (and (not show-components?) (not show-graphics?) (not show-colors?))
             [:div.asset-section

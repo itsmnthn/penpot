@@ -408,12 +408,13 @@
     parent-idx))
 
 (defn split-path
-  [path]
   "Decompose a string in the form 'one / two / three' into
-  an array of strings, normalizing spaces."
+  a vector of strings, normalizing spaces."
+  [path]
   (->> (str/split path "/")
        (map str/trim)
-       (remove str/empty?)))
+       (remove str/empty?)
+       vec))
 
 (defn parse-path-name
   "Parse a string in the form 'group / subgroup / name'.
